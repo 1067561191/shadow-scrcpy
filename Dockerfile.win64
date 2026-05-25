@@ -2,12 +2,15 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+COPY ubuntu.source /etc/apt/sources.list.d/ubuntu.sources
+COPY sources.list /etc/apt/sources.list
+
 RUN apt update && apt install -y --no-install-recommends \
     meson ninja-build nasm \
     mingw-w64 mingw-w64-tools libz-mingw-w64-dev \
     cmake \
     git \
-    wget unzip \
+    wget unzip xz-utils dos2unix \
     autoconf automake libtool \
     python3 \
     make gcc g++ \
@@ -18,7 +21,7 @@ RUN apt update && apt install -y --no-install-recommends \
 WORKDIR /build
 COPY . .
 
-RUN release/build_windows.sh 64
+RUN find . -type f -not -name "*.png" -not -name "*.ico" -not -name "*.jpg" -not -name "*.jar" -not -name "*.so" -not -name "*.a" -not -name "*.o" -not -name "*.obj" -not -name "*.gz" -not -name "*.xz" -not -name "*.bz2" -not -name "*.tar" -not -name "*.zip" -not -name "*.ttf" -not -name "*.otf" -not -name "*.woff" -not -name "*.woff2" -not -name "*.mp3" -not -name "*.mp4" -not -name "*.avi" -exec dos2unix -q {} + && bash release/build_windows.sh 64
 
 VOLUME ["/output"]
 CMD cp -r /build/release/work/build-win64/dist/* /output/

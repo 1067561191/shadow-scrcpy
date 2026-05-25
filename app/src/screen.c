@@ -1,15 +1,12 @@
 #include "screen.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <string.h>
 #include <SDL3/SDL.h>
 
 #ifdef _WIN32
 #include <windows.h>
-// Global hotkey IDs for shadow mode
-#define SC_HOTKEY_TOGGLE_VISIBILITY 1
-#define SC_HOTKEY_TOGGLE_ON_TOP     2
-#define SC_HOTKEY_COLOR_KEY         3
 #endif
 
 #include "events.h"
@@ -19,6 +16,7 @@
 #include "util/sdl.h"
 
 #define DISPLAY_MARGINS 96
+#define COLOR_HASH_SIZE 4096
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
@@ -406,52 +404,28 @@ event_watcher(void *data, SDL_Event *event) {
 #endif
 
 #ifdef _WIN32
+static int sc_screen_hotkey_thread(void *data);
+
 static void
 sc_screen_register_global_hotkeys(struct sc_screen *screen) {
     if (!screen->shadow) {
+        LOGD("Shadow mode not enabled, skipping global hotkeys");
         return;
-    }
-
-    HWND hwnd = (HWND) SDL_GetPointerProperty(
-        SDL_GetWindowProperties(screen->window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    if (!hwnd) {
-        LOGW("Could not get HWND for global hotkeys");
-        return;
-    }
-
-    // Ctrl+Shift+B
-    bool ok = RegisterHotKey(hwnd, SC_HOTKEY_TOGGLE_VISIBILITY,
-                             MOD_CONTROL | MOD_SHIFT, 'B');
-    if (!ok) {
-        LOGW("Could not register Ctrl+Shift+B global hotkey");
-    }
-
-    // Ctrl+Shift+T
-    ok = RegisterHotKey(hwnd, SC_HOTKEY_TOGGLE_ON_TOP,
-                        MOD_CONTROL | MOD_SHIFT, 'T');
-    if (!ok) {
-        LOGW("Could not register Ctrl+Shift+T global hotkey");
-    }
-
-    // Ctrl+Shift+N
-    ok = RegisterHotKey(hwnd, SC_HOTKEY_COLOR_KEY,
-                        MOD_CONTROL | MOD_SHIFT, 'N');
-    if (!ok) {
-        LOGW("Could not register Ctrl+Shift+N global hotkey");
     }
 
     screen->global_hotkeys_registered = true;
-    LOGI("Global hotkeys registered (Ctrl+Shift+B/T/N)");
 
     // Start hotkey polling thread
+    // The thread will register hotkeys itself so messages go to its queue
     screen->hotkey_thread_stop = false;
-    bool ok2 = sc_thread_create(&screen->hotkey_thread,
-                                sc_screen_hotkey_thread, "sc-hotkey", screen);
-    if (ok2) {
+    bool ok = sc_thread_create(&screen->hotkey_thread,
+                               sc_screen_hotkey_thread, "sc-hotkey", screen);
+    if (ok) {
         screen->hotkey_thread_started = true;
+        LOGI("Hotkey thread started");
     } else {
         LOGW("Could not start hotkey thread");
+        screen->global_hotkeys_registered = false;
     }
 }
 
@@ -461,51 +435,94 @@ sc_screen_unregister_global_hotkeys(struct sc_screen *screen) {
         return;
     }
 
+    LOGI("Unregistering global hotkeys...");
+
     // Stop hotkey thread first
     if (screen->hotkey_thread_started) {
         screen->hotkey_thread_stop = true;
         sc_thread_join(&screen->hotkey_thread, NULL);
         screen->hotkey_thread_started = false;
+        LOGI("Hotkey thread stopped");
     }
-
-    HWND hwnd = (HWND) SDL_GetPointerProperty(
-        SDL_GetWindowProperties(screen->window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    if (!hwnd) {
-        return;
-    }
-
-    UnregisterHotKey(hwnd, SC_HOTKEY_TOGGLE_VISIBILITY);
-    UnregisterHotKey(hwnd, SC_HOTKEY_TOGGLE_ON_TOP);
-    UnregisterHotKey(hwnd, SC_HOTKEY_COLOR_KEY);
 
     screen->global_hotkeys_registered = false;
-    LOGD("Global hotkeys unregistered");
+    LOGI("Global hotkeys unregistered");
 }
 
-// Hotkey polling thread - polls for WM_HOTKEY messages
+// Hotkey polling thread - registers hotkeys and polls for WM_HOTKEY messages
 static int
 sc_screen_hotkey_thread(void *data) {
     struct sc_screen *screen = data;
 
+    // Get HWND from the window
+    HWND hwnd = (HWND) SDL_GetPointerProperty(
+        SDL_GetWindowProperties(screen->window),
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!hwnd) {
+        LOGW("Could not get HWND for global hotkeys");
+        return -1;
+    }
+    LOGI("Hotkey thread: HWND=%p", hwnd);
+
+    // Register hotkeys in this thread so messages come to this thread's queue
+    BOOL ok;
+
+    // Use thread ID 0 to associate hotkeys with the calling thread
+    // But RegisterHotKey requires a window handle or a thread ID
+    // Let's try registering with the window handle and poll from main thread
+
+    // Actually, let's use a different approach: use a hidden window in this thread
+    // Or better: just poll from the main thread using SDL event filter
+
+    // For now, let's try registering without a window (hwnd=NULL doesn't work)
+    // We need to use the approach of getting messages from the main thread
+
+    // Let's try a different approach: use GetAsyncKeyState to poll key state
+    LOGI("Hotkey thread: using GetAsyncKeyState polling approach");
+
+    bool b_was_pressed = false;
+    bool t_was_pressed = false;
+    bool n_was_pressed = false;
+
     while (!screen->hotkey_thread_stop) {
-        MSG msg;
-        while (PeekMessage(&msg, NULL, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
-            switch (msg.wParam) {
-                case SC_HOTKEY_TOGGLE_VISIBILITY:
-                    sc_screen_toggle_visibility(screen);
-                    break;
-                case SC_HOTKEY_TOGGLE_ON_TOP:
-                    sc_screen_toggle_always_on_top(screen);
-                    break;
-                case SC_HOTKEY_COLOR_KEY:
-                    sc_screen_activate_color_key(screen);
-                    break;
+        // Check if Ctrl and Shift are held
+        bool ctrl = GetAsyncKeyState(VK_CONTROL) & 0x8000;
+        bool shift = GetAsyncKeyState(VK_SHIFT) & 0x8000;
+
+        if (ctrl && shift) {
+            // Check B
+            bool b_pressed = GetAsyncKeyState('B') & 0x8000;
+            if (b_pressed && !b_was_pressed) {
+                LOGI("Hotkey: Ctrl+Shift+B detected");
+                sc_screen_toggle_visibility(screen);
             }
+            b_was_pressed = b_pressed;
+
+            // Check T
+            bool t_pressed = GetAsyncKeyState('T') & 0x8000;
+            if (t_pressed && !t_was_pressed) {
+                LOGI("Hotkey: Ctrl+Shift+T detected");
+                sc_screen_toggle_always_on_top(screen);
+            }
+            t_was_pressed = t_pressed;
+
+            // Check N
+            bool n_pressed = GetAsyncKeyState('N') & 0x8000;
+            if (n_pressed && !n_was_pressed) {
+                LOGI("Hotkey: Ctrl+Shift+N detected");
+                sc_screen_activate_color_key(screen);
+            }
+            n_was_pressed = n_pressed;
+        } else {
+            b_was_pressed = false;
+            t_was_pressed = false;
+            n_was_pressed = false;
         }
-        SDL_Delay(50); // Poll every 50ms
+
+        SDL_Delay(20); // Poll every 20ms
     }
 
+    LOGI("Hotkey thread exiting");
     return 0;
 }
 #endif
@@ -1567,6 +1584,8 @@ sc_screen_convert_window_to_frame_coords(struct sc_screen *screen,
 
 void
 sc_screen_toggle_visibility(struct sc_screen *screen) {
+    LOGI("sc_screen_toggle_visibility called, shadow=%d, window_visible=%d",
+         screen->shadow, screen->window_visible);
     assert(screen->shadow);
 
     if (screen->window_visible) {
@@ -1604,13 +1623,16 @@ sc_screen_activate_color_key(struct sc_screen *screen) {
         return;
     }
 
-    sc_mutex_lock(&screen->mutex);
-    AVFrame *frame = screen->fb.pending_frame;
-    if (!frame) {
-        sc_mutex_unlock(&screen->mutex);
-        LOGW("No frame available for color key analysis");
+    // Use the current frame being displayed
+    AVFrame *frame = screen->frame;
+    if (!frame || frame->width <= 0 || frame->height <= 0) {
+        LOGW("No valid frame available for color key analysis");
         return;
     }
+
+    LOGI("Analyzing frame: %dx%d, linesize=[%d,%d,%d]",
+         frame->width, frame->height,
+         frame->linesize[0], frame->linesize[1], frame->linesize[2]);
 
     // Analyze the frame to find the most frequent color
     // Frame is in YUV420P format
@@ -1623,15 +1645,20 @@ sc_screen_activate_color_key(struct sc_screen *screen) {
     uint8_t *u_data = frame->data[1];
     uint8_t *v_data = frame->data[2];
 
+    if (!y_data || !u_data || !v_data) {
+        LOGW("Frame data is NULL");
+        return;
+    }
+
     // Use a simple hash map to count colors
     // We'll quantize colors to reduce the number of unique values
-    #define COLOR_HASH_SIZE 4096
     struct color_count {
         uint32_t rgb;
         uint32_t count;
     } color_table[COLOR_HASH_SIZE];
     memset(color_table, 0, sizeof(color_table));
 
+    uint32_t total_pixels = 0;
     for (int j = 0; j < height; j += 2) { // Sample every other row for speed
         for (int i = 0; i < width; i += 2) { // Sample every other column
             int y = y_data[j * y_stride + i];
@@ -1665,7 +1692,15 @@ sc_screen_activate_color_key(struct sc_screen *screen) {
                 color_table[hash].rgb = rgb;
             }
             color_table[hash].count++;
+            total_pixels++;
         }
+    }
+
+    LOGI("Analyzed %u pixels", total_pixels);
+
+    if (total_pixels == 0) {
+        LOGW("No pixels analyzed");
+        return;
     }
 
     // Find the most frequent color
@@ -1683,8 +1718,7 @@ sc_screen_activate_color_key(struct sc_screen *screen) {
     screen->key_b = max_rgb & 0xFF;
     screen->color_key_active = true;
 
-    sc_mutex_unlock(&screen->mutex);
-
-    LOGI("Color key activated: R=%d G=%d B=%d (count=%u)",
-         screen->key_r, screen->key_g, screen->key_b, max_count);
+    LOGI("Color key activated: R=%d G=%d B=%d (count=%u, %.1f%% of pixels)",
+         screen->key_r, screen->key_g, screen->key_b, max_count,
+         (float)max_count * 100.0f / total_pixels);
 }
