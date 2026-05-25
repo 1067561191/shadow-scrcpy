@@ -1,0 +1,24 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt update && apt install -y --no-install-recommends \
+    meson ninja-build nasm \
+    mingw-w64 mingw-w64-tools libz-mingw-w64-dev \
+    cmake \
+    git \
+    wget unzip \
+    autoconf automake libtool \
+    python3 \
+    make gcc g++ \
+    pkg-config \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN release/build_windows.sh 64
+
+VOLUME ["/output"]
+CMD cp -r /build/release/work/build-win64/dist/* /output/
