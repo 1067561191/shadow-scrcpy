@@ -760,6 +760,7 @@ aoa_complete:
             .mipmaps = options->mipmaps,
             .fullscreen = options->fullscreen,
             .start_fps_counter = options->start_fps_counter,
+            .shadow = options->shadow,
         };
 
         if (!sc_screen_init(&s->screen, &screen_params)) {

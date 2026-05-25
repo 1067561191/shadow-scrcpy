@@ -49,6 +49,8 @@ sc_input_manager_init(struct sc_input_manager *im,
     im->next_sequence = 1; // 0 is reserved for SC_SEQUENCE_INVALID
 
     im->disconnected = false;
+
+    im->shadow = params->shadow;
 }
 
 static void
@@ -527,6 +529,24 @@ sc_input_manager_process_key(struct sc_input_manager *im,
                 return;
             case SDLK_Q:
                 sc_push_event(SDL_EVENT_QUIT);
+                return;
+            case SDLK_B:
+                // Ctrl+Shift+B: toggle window visibility (shadow mode)
+                if (im->shadow && ctrl && shift && !repeat && down) {
+                    sc_screen_toggle_visibility(im->screen);
+                }
+                return;
+            case SDLK_T:
+                // Ctrl+Shift+T: toggle always on top (shadow mode)
+                if (im->shadow && ctrl && shift && !repeat && down) {
+                    sc_screen_toggle_always_on_top(im->screen);
+                }
+                return;
+            case SDLK_N:
+                // Ctrl+Shift+N: activate color key (shadow mode)
+                if (im->shadow && ctrl && shift && !repeat && down) {
+                    sc_screen_activate_color_key(im->screen);
+                }
                 return;
         }
 

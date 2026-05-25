@@ -107,6 +107,19 @@ struct sc_screen {
         sc_tick time; // 0 means none
         struct sc_size size;
     } resize_tracker;
+
+    // Shadow mode
+    bool shadow;
+    bool always_on_top_state;
+    bool window_visible;
+
+    // Color key transparency
+    bool color_key_active;
+    uint8_t key_r;
+    uint8_t key_g;
+    uint8_t key_b;
+    SDL_Texture *color_key_texture;
+    struct sc_size color_key_texture_size;
 };
 
 struct sc_screen_params {
@@ -144,6 +157,8 @@ struct sc_screen_params {
 
     bool fullscreen;
     bool start_fps_counter;
+
+    bool shadow;
 };
 
 // initialize screen, create window, renderer and texture (window is hidden)
@@ -204,5 +219,17 @@ sc_screen_handle_disconnection(struct sc_screen *screen);
 struct sc_point
 sc_screen_convert_window_to_frame_coords(struct sc_screen *screen,
                                         int32_t x, int32_t y);
+
+// toggle window visibility (shadow mode)
+void
+sc_screen_toggle_visibility(struct sc_screen *screen);
+
+// toggle always on top (shadow mode)
+void
+sc_screen_toggle_always_on_top(struct sc_screen *screen);
+
+// activate color key transparency (shadow mode)
+void
+sc_screen_activate_color_key(struct sc_screen *screen);
 
 #endif

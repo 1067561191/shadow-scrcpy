@@ -48,6 +48,8 @@ struct sc_input_manager {
     uint64_t next_sequence; // used for request acknowledgements
 
     bool disconnected;
+
+    bool shadow;
 };
 
 struct sc_input_manager_params {
@@ -63,6 +65,7 @@ struct sc_input_manager_params {
     bool legacy_paste;
     bool clipboard_autosync;
     uint8_t shortcut_mods; // OR of enum sc_shortcut_mod values
+    bool shadow;
 };
 
 void

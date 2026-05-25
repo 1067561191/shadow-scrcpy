@@ -244,11 +244,21 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
     }
 
     SDL_Renderer *renderer = screen->renderer;
-    struct sc_screen_bg_color bg = screen->bg;
-    SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 0);
+    if (screen->shadow && screen->color_key_active) {
+        // Transparent background for color key mode
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+    } else {
+        struct sc_screen_bg_color bg = screen->bg;
+        SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
+    }
     sc_sdl_render_clear(renderer);
 
-    SDL_Texture *texture = screen->tex.texture;
+    SDL_Texture *texture;
+    if (screen->shadow && screen->color_key_active && screen->color_key_texture) {
+        texture = screen->color_key_texture;
+    } else {
+        texture = screen->tex.texture;
+    }
     if (!texture) {
         goto end;
     }
@@ -508,6 +518,18 @@ sc_screen_init(struct sc_screen *screen,
     screen->resize_tracker.size.width = 0;
     screen->resize_tracker.size.height = 0;
 
+    // Shadow mode
+    screen->shadow = params->shadow;
+    screen->always_on_top_state = params->always_on_top;
+    screen->window_visible = false;
+    screen->color_key_active = false;
+    screen->key_r = 0;
+    screen->key_g = 0;
+    screen->key_b = 0;
+    screen->color_key_texture = NULL;
+    screen->color_key_texture_size.width = 0;
+    screen->color_key_texture_size.height = 0;
+
     bool ok = sc_mutex_init(&screen->mutex);
     if (!ok) {
         return false;
@@ -537,6 +559,9 @@ sc_screen_init(struct sc_screen *screen,
     }
     if (params->window_borderless) {
         window_flags |= SDL_WINDOW_BORDERLESS;
+    }
+    if (params->shadow) {
+        window_flags |= SDL_WINDOW_TRANSPARENT;
     }
     if (params->video) {
         // The window will be shown on first frame
@@ -658,6 +683,7 @@ sc_screen_init(struct sc_screen *screen,
         .legacy_paste = params->legacy_paste,
         .clipboard_autosync = params->clipboard_autosync,
         .shortcut_mods = params->shortcut_mods,
+        .shadow = params->shadow,
     };
 
     sc_input_manager_init(&screen->im, &im_params);
@@ -693,7 +719,13 @@ sc_screen_init(struct sc_screen *screen,
     if (!screen->video) {
         // Show the window immediately
         screen->window_shown = true;
-        sc_sdl_show_window(screen->window);
+        if (screen->shadow) {
+            // In shadow mode, start with window hidden
+            screen->window_visible = false;
+            LOGI("Shadow mode: window hidden, press Ctrl+Shift+B to show");
+        } else {
+            sc_sdl_show_window(screen->window);
+        }
 
         if (sc_screen_is_relative_mode(screen)) {
             // Capture mouse immediately if video mirroring is disabled
@@ -761,7 +793,14 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
     }
 
     screen->window_shown = true;
-    sc_sdl_show_window(screen->window);
+    if (screen->shadow) {
+        // In shadow mode, start with window hidden
+        // User can show it with Ctrl+Shift+B
+        screen->window_visible = false;
+        LOGI("Shadow mode: window hidden, press Ctrl+Shift+B to show");
+    } else {
+        sc_sdl_show_window(screen->window);
+    }
     sc_screen_update_content_rect(screen);
 }
 
@@ -800,6 +839,9 @@ sc_screen_destroy(struct sc_screen *screen) {
         sc_disconnect_destroy(&screen->disconnect);
     }
     sc_texture_destroy(&screen->tex);
+    if (screen->color_key_texture) {
+        SDL_DestroyTexture(screen->color_key_texture);
+    }
     av_frame_free(&screen->frame);
 #ifdef SC_DISPLAY_FORCE_OPENGL_CORE_PROFILE
     SDL_GL_DestroyContext(screen->gl_context);
@@ -898,6 +940,89 @@ sc_screen_set_orientation(struct sc_screen *screen,
 }
 
 static bool
+sc_screen_apply_frame_color_key(struct sc_screen *screen, AVFrame *frame) {
+    int width = frame->width;
+    int height = frame->height;
+    int y_stride = frame->linesize[0];
+    int u_stride = frame->linesize[1];
+    int v_stride = frame->linesize[2];
+    uint8_t *y_data = frame->data[0];
+    uint8_t *u_data = frame->data[1];
+    uint8_t *v_data = frame->data[2];
+
+    // Create or resize ARGB texture if needed
+    if (!screen->color_key_texture
+            || screen->color_key_texture_size.width != (uint32_t) width
+            || screen->color_key_texture_size.height != (uint32_t) height) {
+        if (screen->color_key_texture) {
+            SDL_DestroyTexture(screen->color_key_texture);
+        }
+
+        screen->color_key_texture = SDL_CreateTexture(
+            screen->renderer,
+            SDL_PIXELFORMAT_ARGB8888,
+            SDL_TEXTUREACCESS_STREAMING,
+            width, height);
+        if (!screen->color_key_texture) {
+            LOGE("Could not create color key texture: %s", SDL_GetError());
+            return false;
+        }
+
+        SDL_SetTextureBlendMode(screen->color_key_texture, SDL_BLENDMODE_BLEND);
+        screen->color_key_texture_size.width = width;
+        screen->color_key_texture_size.height = height;
+    }
+
+    // Lock texture for writing
+    void *pixels;
+    int pitch;
+    if (!SDL_LockTexture(screen->color_key_texture, NULL, &pixels, &pitch)) {
+        LOGE("Could not lock texture: %s", SDL_GetError());
+        return false;
+    }
+
+    uint8_t *dst = (uint8_t *) pixels;
+    uint8_t key_r = screen->key_r;
+    uint8_t key_g = screen->key_g;
+    uint8_t key_b = screen->key_b;
+
+    // Convert YUV to ARGB with color key transparency
+    for (int j = 0; j < height; j++) {
+        uint32_t *row = (uint32_t *) (dst + j * pitch);
+        for (int i = 0; i < width; i++) {
+            int y = y_data[j * y_stride + i];
+            int u = u_data[(j / 2) * u_stride + (i / 2)] - 128;
+            int v = v_data[(j / 2) * v_stride + (i / 2)] - 128;
+
+            // YUV to RGB conversion
+            int r = y + (int)(1.402 * v);
+            int g = y - (int)(0.344 * u) - (int)(0.714 * v);
+            int b = y + (int)(1.772 * u);
+
+            // Clamp to 0-255
+            r = r < 0 ? 0 : (r > 255 ? 255 : r);
+            g = g < 0 ? 0 : (g > 255 ? 255 : g);
+            b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+            // Check if this pixel matches the key color (with tolerance)
+            int tolerance = 16;
+            uint8_t alpha = 255;
+            if (abs(r - key_r) <= tolerance
+                    && abs(g - key_g) <= tolerance
+                    && abs(b - key_b) <= tolerance) {
+                alpha = 0;
+            }
+
+            // ARGB format
+            row[i] = (alpha << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    SDL_UnlockTexture(screen->color_key_texture);
+    return true;
+}
+
+static bool
 sc_screen_apply_frame(struct sc_screen *screen, bool can_resize) {
     assert(screen->video);
     assert(screen->window_shown);
@@ -927,6 +1052,14 @@ sc_screen_apply_frame(struct sc_screen *screen, bool can_resize) {
     bool ok = sc_texture_set_from_frame(&screen->tex, frame);
     if (!ok) {
         return false;
+    }
+
+    // Apply color key if active
+    if (screen->shadow && screen->color_key_active) {
+        ok = sc_screen_apply_frame_color_key(screen, frame);
+        if (!ok) {
+            LOGW("Color key processing failed, using normal frame");
+        }
     }
 
     sc_screen_render(screen, false);
@@ -1297,4 +1430,128 @@ sc_screen_convert_window_to_frame_coords(struct sc_screen *screen,
     }
 
     return result;
+}
+
+void
+sc_screen_toggle_visibility(struct sc_screen *screen) {
+    assert(screen->shadow);
+
+    if (screen->window_visible) {
+        SDL_HideWindow(screen->window);
+        screen->window_visible = false;
+        LOGI("Window hidden");
+    } else {
+        SDL_ShowWindow(screen->window);
+        screen->window_visible = true;
+        LOGI("Window shown");
+    }
+}
+
+void
+sc_screen_toggle_always_on_top(struct sc_screen *screen) {
+    assert(screen->shadow);
+
+    screen->always_on_top_state = !screen->always_on_top_state;
+    bool ok = SDL_SetWindowAlwaysOnTop(screen->window,
+                                        screen->always_on_top_state);
+    if (!ok) {
+        LOGW("Could not set always on top: %s", SDL_GetError());
+        return;
+    }
+
+    LOGI("Always on top: %s", screen->always_on_top_state ? "on" : "off");
+}
+
+void
+sc_screen_activate_color_key(struct sc_screen *screen) {
+    assert(screen->shadow);
+
+    if (!screen->video || screen->paused) {
+        LOGW("Cannot activate color key: no video or paused");
+        return;
+    }
+
+    sc_mutex_lock(&screen->mutex);
+    AVFrame *frame = screen->fb.pending_frame;
+    if (!frame) {
+        sc_mutex_unlock(&screen->mutex);
+        LOGW("No frame available for color key analysis");
+        return;
+    }
+
+    // Analyze the frame to find the most frequent color
+    // Frame is in YUV420P format
+    int width = frame->width;
+    int height = frame->height;
+    int y_stride = frame->linesize[0];
+    int u_stride = frame->linesize[1];
+    int v_stride = frame->linesize[2];
+    uint8_t *y_data = frame->data[0];
+    uint8_t *u_data = frame->data[1];
+    uint8_t *v_data = frame->data[2];
+
+    // Use a simple hash map to count colors
+    // We'll quantize colors to reduce the number of unique values
+    #define COLOR_HASH_SIZE 4096
+    struct color_count {
+        uint32_t rgb;
+        uint32_t count;
+    } color_table[COLOR_HASH_SIZE];
+    memset(color_table, 0, sizeof(color_table));
+
+    for (int j = 0; j < height; j += 2) { // Sample every other row for speed
+        for (int i = 0; i < width; i += 2) { // Sample every other column
+            int y = y_data[j * y_stride + i];
+            int u = u_data[(j / 2) * u_stride + (i / 2)] - 128;
+            int v = v_data[(j / 2) * v_stride + (i / 2)] - 128;
+
+            // YUV to RGB conversion
+            int r = y + (int)(1.402 * v);
+            int g = y - (int)(0.344 * u) - (int)(0.714 * v);
+            int b = y + (int)(1.772 * u);
+
+            // Clamp to 0-255
+            r = r < 0 ? 0 : (r > 255 ? 255 : r);
+            g = g < 0 ? 0 : (g > 255 ? 255 : g);
+            b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+            // Quantize to reduce unique colors (4 bits per channel)
+            r = (r >> 4) << 4;
+            g = (g >> 4) << 4;
+            b = (b >> 4) << 4;
+
+            uint32_t rgb = (r << 16) | (g << 8) | b;
+            uint32_t hash = (rgb * 2654435761U) >> 20; // Simple hash
+
+            // Linear probing
+            while (color_table[hash].count > 0 && color_table[hash].rgb != rgb) {
+                hash = (hash + 1) & (COLOR_HASH_SIZE - 1);
+            }
+
+            if (color_table[hash].count == 0) {
+                color_table[hash].rgb = rgb;
+            }
+            color_table[hash].count++;
+        }
+    }
+
+    // Find the most frequent color
+    uint32_t max_count = 0;
+    uint32_t max_rgb = 0;
+    for (int i = 0; i < COLOR_HASH_SIZE; i++) {
+        if (color_table[i].count > max_count) {
+            max_count = color_table[i].count;
+            max_rgb = color_table[i].rgb;
+        }
+    }
+
+    screen->key_r = (max_rgb >> 16) & 0xFF;
+    screen->key_g = (max_rgb >> 8) & 0xFF;
+    screen->key_b = max_rgb & 0xFF;
+    screen->color_key_active = true;
+
+    sc_mutex_unlock(&screen->mutex);
+
+    LOGI("Color key activated: R=%d G=%d B=%d (count=%u)",
+         screen->key_r, screen->key_g, screen->key_b, max_count);
 }

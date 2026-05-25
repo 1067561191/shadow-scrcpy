@@ -109,6 +109,7 @@ enum {
     OPT_KEEP_ACTIVE,
     OPT_BACKGROUND_COLOR,
     OPT_RENDER_FIT,
+    OPT_SHADOW,
 };
 
 struct sc_option {
@@ -859,6 +860,14 @@ static const struct sc_option options[] = {
                 "For example, to use either LCtrl or LSuper for scrcpy "
                 "shortcuts, pass \"lctrl,lsuper\".\n"
                 "Default is \"lalt,lsuper\" (left-Alt or left-Super).",
+    },
+    {
+        .longopt_id = OPT_SHADOW,
+        .longopt = "shadow",
+        .text = "Enable shadow mode: borderless window with shortcuts.\n"
+                "  Ctrl+Shift+B: show/hide window\n"
+                "  Ctrl+Shift+T: toggle always on top\n"
+                "  Ctrl+Shift+N: activate color key transparency",
     },
     {
         .longopt_id = OPT_START_APP,
@@ -2591,6 +2600,10 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
                 break;
             case OPT_ALWAYS_ON_TOP:
                 opts->always_on_top = true;
+                break;
+            case OPT_SHADOW:
+                opts->shadow = true;
+                opts->window_borderless = true;
                 break;
             case 'v':
                 args->version = true;
