@@ -35,6 +35,9 @@ mkdir -p "$OUTPUT_DIR"
 cd "$ARCHIVE_DIR"
 rm -f "$OUTPUT_DIR/$TARGET_DIRNAME.$FORMAT"
 
+# Create parent directory for output file (handles branch names with /)
+mkdir -p "$(dirname "$OUTPUT_DIR/$TARGET_DIRNAME.$FORMAT")"
+
 case "$FORMAT" in
     zip)
         zip -r "$OUTPUT_DIR/$TARGET_DIRNAME.zip" "$TARGET_DIRNAME"

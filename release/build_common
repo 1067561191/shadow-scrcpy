@@ -3,3 +3,5 @@ WORK_DIR="$PWD/work"
 OUTPUT_DIR="$PWD/output"
 
 VERSION="${VERSION:-$(git describe --tags --always)}"
+# Sanitize version string: replace / with - for valid file paths
+VERSION="${VERSION//\//-}"
