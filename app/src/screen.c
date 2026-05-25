@@ -720,9 +720,12 @@ sc_screen_init(struct sc_screen *screen,
         // Show the window immediately
         screen->window_shown = true;
         if (screen->shadow) {
-            // In shadow mode, start with window hidden
-            screen->window_visible = false;
-            LOGI("Shadow mode: window hidden, press Ctrl+Shift+B to show");
+            // In shadow mode, window is visible by default
+            screen->window_visible = true;
+            sc_sdl_show_window(screen->window);
+            LOGI("Shadow mode: press Ctrl+Shift+B to hide/show, "
+                 "Ctrl+Shift+T for always on top, "
+                 "Ctrl+Shift+N for color key");
         } else {
             sc_sdl_show_window(screen->window);
         }
@@ -794,10 +797,13 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
 
     screen->window_shown = true;
     if (screen->shadow) {
-        // In shadow mode, start with window hidden
-        // User can show it with Ctrl+Shift+B
-        screen->window_visible = false;
-        LOGI("Shadow mode: window hidden, press Ctrl+Shift+B to show");
+        // In shadow mode, window is visible by default
+        // User can hide it with Ctrl+Shift+B
+        screen->window_visible = true;
+        sc_sdl_show_window(screen->window);
+        LOGI("Shadow mode: press Ctrl+Shift+B to hide/show, "
+             "Ctrl+Shift+T for always on top, "
+             "Ctrl+Shift+N for color key");
     } else {
         sc_sdl_show_window(screen->window);
     }
