@@ -10,6 +10,9 @@ env:
   # $VERSION is used by release scripts
   VERSION: ${{ github.event.inputs.name || github.ref_name }}
 
+permissions:
+  contents: write
+
 jobs:
   test-scrcpy-server:
     runs-on: ubuntu-latest
@@ -527,3 +530,14 @@ jobs:
         with:
           name: scrcpy-release-${{ env.VERSION }}
           path: release/output
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: scrcpy ${{ env.VERSION }}
+          draft: false
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          files: |
+            release/output/*
+          generate_release_notes: true
