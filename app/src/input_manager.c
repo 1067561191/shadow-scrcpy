@@ -462,22 +462,6 @@ sc_input_manager_process_key(struct sc_input_manager *im,
             return;
     }
 
-    // Shadow mode shortcuts (Ctrl+Shift+B/T/N) - handled before is_shortcut
-    // because Ctrl may not be in the default shortcut modifiers
-    if (im->shadow && ctrl && shift && !repeat && down) {
-        switch (sdl_keycode) {
-            case SDLK_B:
-                sc_screen_toggle_visibility(im->screen);
-                return;
-            case SDLK_T:
-                sc_screen_toggle_always_on_top(im->screen);
-                return;
-            case SDLK_N:
-                sc_screen_activate_color_key(im->screen);
-                return;
-        }
-    }
-
     if (is_shortcut) {
         enum sc_action action = down ? SC_ACTION_DOWN : SC_ACTION_UP;
         switch (sdl_keycode) {

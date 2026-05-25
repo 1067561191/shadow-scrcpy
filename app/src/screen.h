@@ -113,6 +113,14 @@ struct sc_screen {
     bool always_on_top_state;
     bool window_visible;
 
+#ifdef _WIN32
+    // Global hotkeys for shadow mode (work even when window is hidden)
+    bool global_hotkeys_registered;
+    struct sc_thread hotkey_thread;
+    bool hotkey_thread_started;
+    bool hotkey_thread_stop;
+#endif
+
     // Color key transparency
     bool color_key_active;
     uint8_t key_r;

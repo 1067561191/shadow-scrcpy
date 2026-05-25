@@ -4,6 +4,14 @@
 #include <string.h>
 #include <SDL3/SDL.h>
 
+#ifdef _WIN32
+#include <windows.h>
+// Global hotkey IDs for shadow mode
+#define SC_HOTKEY_TOGGLE_VISIBILITY 1
+#define SC_HOTKEY_TOGGLE_ON_TOP     2
+#define SC_HOTKEY_COLOR_KEY         3
+#endif
+
 #include "events.h"
 #include "icon.h"
 #include "options.h"
@@ -397,6 +405,111 @@ event_watcher(void *data, SDL_Event *event) {
 }
 #endif
 
+#ifdef _WIN32
+static void
+sc_screen_register_global_hotkeys(struct sc_screen *screen) {
+    if (!screen->shadow) {
+        return;
+    }
+
+    HWND hwnd = (HWND) SDL_GetPointerProperty(
+        SDL_GetWindowProperties(screen->window),
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!hwnd) {
+        LOGW("Could not get HWND for global hotkeys");
+        return;
+    }
+
+    // Ctrl+Shift+B
+    bool ok = RegisterHotKey(hwnd, SC_HOTKEY_TOGGLE_VISIBILITY,
+                             MOD_CONTROL | MOD_SHIFT, 'B');
+    if (!ok) {
+        LOGW("Could not register Ctrl+Shift+B global hotkey");
+    }
+
+    // Ctrl+Shift+T
+    ok = RegisterHotKey(hwnd, SC_HOTKEY_TOGGLE_ON_TOP,
+                        MOD_CONTROL | MOD_SHIFT, 'T');
+    if (!ok) {
+        LOGW("Could not register Ctrl+Shift+T global hotkey");
+    }
+
+    // Ctrl+Shift+N
+    ok = RegisterHotKey(hwnd, SC_HOTKEY_COLOR_KEY,
+                        MOD_CONTROL | MOD_SHIFT, 'N');
+    if (!ok) {
+        LOGW("Could not register Ctrl+Shift+N global hotkey");
+    }
+
+    screen->global_hotkeys_registered = true;
+    LOGI("Global hotkeys registered (Ctrl+Shift+B/T/N)");
+
+    // Start hotkey polling thread
+    screen->hotkey_thread_stop = false;
+    bool ok2 = sc_thread_create(&screen->hotkey_thread,
+                                sc_screen_hotkey_thread, "sc-hotkey", screen);
+    if (ok2) {
+        screen->hotkey_thread_started = true;
+    } else {
+        LOGW("Could not start hotkey thread");
+    }
+}
+
+static void
+sc_screen_unregister_global_hotkeys(struct sc_screen *screen) {
+    if (!screen->global_hotkeys_registered) {
+        return;
+    }
+
+    // Stop hotkey thread first
+    if (screen->hotkey_thread_started) {
+        screen->hotkey_thread_stop = true;
+        sc_thread_join(&screen->hotkey_thread, NULL);
+        screen->hotkey_thread_started = false;
+    }
+
+    HWND hwnd = (HWND) SDL_GetPointerProperty(
+        SDL_GetWindowProperties(screen->window),
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!hwnd) {
+        return;
+    }
+
+    UnregisterHotKey(hwnd, SC_HOTKEY_TOGGLE_VISIBILITY);
+    UnregisterHotKey(hwnd, SC_HOTKEY_TOGGLE_ON_TOP);
+    UnregisterHotKey(hwnd, SC_HOTKEY_COLOR_KEY);
+
+    screen->global_hotkeys_registered = false;
+    LOGD("Global hotkeys unregistered");
+}
+
+// Hotkey polling thread - polls for WM_HOTKEY messages
+static int
+sc_screen_hotkey_thread(void *data) {
+    struct sc_screen *screen = data;
+
+    while (!screen->hotkey_thread_stop) {
+        MSG msg;
+        while (PeekMessage(&msg, NULL, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
+            switch (msg.wParam) {
+                case SC_HOTKEY_TOGGLE_VISIBILITY:
+                    sc_screen_toggle_visibility(screen);
+                    break;
+                case SC_HOTKEY_TOGGLE_ON_TOP:
+                    sc_screen_toggle_always_on_top(screen);
+                    break;
+                case SC_HOTKEY_COLOR_KEY:
+                    sc_screen_activate_color_key(screen);
+                    break;
+            }
+        }
+        SDL_Delay(50); // Poll every 50ms
+    }
+
+    return 0;
+}
+#endif
+
 static bool
 sc_screen_frame_sink_open(struct sc_frame_sink *sink,
                           const AVCodecContext *ctx,
@@ -529,6 +642,11 @@ sc_screen_init(struct sc_screen *screen,
     screen->color_key_texture = NULL;
     screen->color_key_texture_size.width = 0;
     screen->color_key_texture_size.height = 0;
+#ifdef _WIN32
+    screen->global_hotkeys_registered = false;
+    screen->hotkey_thread_started = false;
+    screen->hotkey_thread_stop = false;
+#endif
 
     bool ok = sc_mutex_init(&screen->mutex);
     if (!ok) {
@@ -723,6 +841,9 @@ sc_screen_init(struct sc_screen *screen,
             // In shadow mode, window is visible by default
             screen->window_visible = true;
             sc_sdl_show_window(screen->window);
+#ifdef _WIN32
+            sc_screen_register_global_hotkeys(screen);
+#endif
             LOGI("Shadow mode: press Ctrl+Shift+B to hide/show, "
                  "Ctrl+Shift+T for always on top, "
                  "Ctrl+Shift+N for color key");
@@ -801,6 +922,9 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
         // User can hide it with Ctrl+Shift+B
         screen->window_visible = true;
         sc_sdl_show_window(screen->window);
+#ifdef _WIN32
+        sc_screen_register_global_hotkeys(screen);
+#endif
         LOGI("Shadow mode: press Ctrl+Shift+B to hide/show, "
              "Ctrl+Shift+T for always on top, "
              "Ctrl+Shift+N for color key");
@@ -844,6 +968,9 @@ sc_screen_destroy(struct sc_screen *screen) {
     if (screen->disconnect_started) {
         sc_disconnect_destroy(&screen->disconnect);
     }
+#ifdef _WIN32
+    sc_screen_unregister_global_hotkeys(screen);
+#endif
     sc_texture_destroy(&screen->tex);
     if (screen->color_key_texture) {
         SDL_DestroyTexture(screen->color_key_texture);
